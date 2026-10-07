@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Semáforos - PRO Creator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root { --tl-global-scale: 1; }
+
+        /* Caixa do Semáforo */
+        .traffic-light {
+            background-color: #111; padding: 5px; border-radius: 8px; border: 2px solid #333;
+            display: flex; flex-direction: column; gap: 4px; align-items: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.5); width: fit-content;
+            transform: scale(var(--tl-global-scale)) rotate(var(--tl-rot, 0deg));
+            transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .tl-led {
+            width: 16px; height: 16px; border-radius: 50%; background-color: #222;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.8); transition: background-color 0.1s, box-shadow 0.1s;
+        }
+
+        .tl-red.active { background-color: #ef4444; box-shadow: 0 0 12px 2px #ef4444, inset 0 -1px 2px rgba(0,0,0,0.5); }
+        .tl-yellow.active { background-color: #eab308; box-shadow: 0 0 12px 2px #eab308, inset 0 -1px 2px rgba(0,0,0,0.5); }
+        .tl-green.active { background-color: #22c55e; box-shadow: 0 0 12px 2px #22c55e, inset 0 -1px 2px rgba(0,0,0,0.5); }
+        
+        @keyframes tlBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0.15; box-shadow: none; } }
+        .is-blinking { animation: tlBlink 1s infinite; }
+
+        /* Canvas */
+        #canvas-container {
+            cursor: grab; background-image: linear-gradient(#1f2937 1px, transparent 1px), linear-gradient(90deg, #1f2937 1px, transparent 1px);
+            background-size: 20px 20px; background-color: #111827; resize: vertical; overflow: hidden; min-height: 300px;
+        }
+        #canvas-container.locked { cursor: default; }
+        #canvas-container:not(.locked):active { cursor: grabbing; }
+        
+        #map-layer { transform-origin: top left; will-change: transform; width: 3000px; height: 3000px; background-repeat: no-repeat; }
+
+        .draggable-led { position: absolute; cursor: move; user-select: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px; z-index: 10; }
+        .draggable-led:active { z-index: 50; }
+        
+        .tl-controls { display: flex; align-items: center; gap: 4px; background-color: rgba(0, 0, 0, 0.8); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 2px 4px; pointer-events: auto; }
+        .led-label { pointer-events: none; color: white; font-size: 11px; font-family: monospace; font-weight: bold; white-space: nowrap; }
+        .btn-rotate { background: #4b5563; color: white; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .btn-rotate:hover { background: #3b82f6; }
+        
+        .active-col { background-color: rgba(34, 197, 94, 0.15); border-left: 1px solid rgba(34, 197, 94, 0.5); border-right: 1px solid rgba(34, 197, 94, 0.5); }
+
+        /* Inputs invisíveis */
+        .editable-input { background: transparent; border: 1px dashed transparent; color: inherit; width: 100%; text-align: inherit; outline: none; transition: border 0.2s; }
+        .editable-input:focus { border-bottom: 1px dashed #60a5fa; }
+        .editable-input:hover { border-bottom: 1px dashed #4b5563; }
+        
+        /* Oculta table head se não houver semáforos */
+        .empty-state-hide:empty { display: none; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 p-4 md:p-6 font-sans min-h-screen flex flex-col">
+
+    <div class="max-w-[1600px] mx-auto w-full flex-grow flex flex-col gap-6">
+        
+        <!-- BARRA SUPERIOR -->
+        <div class="flex flex-col xl:flex-row justify-between items-center gap-4 bg-gray-800 p-4 rounded-lg border border-gray-700 shadow-xl">
+            <h1 class="text-xl font-bold text-center xl:text-left text-white flex-shrink-0">🚦 Simulador</h1>
+            
+            <div class="flex items-center space-x-3 flex-shrink-0">
+                <div class="text-sm font-mono bg-gray-900 px-3 py-2 rounded border border-gray-600 shadow w-48 text-center flex justify-between items-center h-[48px]">
+                    <span id="status-text" class="text-yellow-400 font-bold truncate">PARADO</span>
+                    <span class="ml-2 bg-black px-2 py-1 rounded text-xs text-gray-300">T:<span id="timer-text" class="text-white font-bold ml-1">0</span>s</span>
+                </div>
+                <button id="btn-toggle" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded font-bold transition text-sm shadow-md h-[48px]">▶ Iniciar</button>
+                <button id="btn-reset" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded font-bold transition text-sm shadow-md h-[48px]">⏹ Reset</button>
+            </div>
+
+            <div class="flex flex-wrap justify-center items-center gap-3">
+                <div class="flex items-center space-x-2 bg-gray-900 p-2 rounded border border-gray-600 shadow-sm">
+                    <label class="text-xs font-bold text-gray-300">🎱 Número de estados:</label>
+                    <input type="number" id="num-states-input" value="4" min="1" max="20" class="w-12 bg-gray-800 border border-gray-600 rounded px-1 py-1 text-center font-bold text-sm outline-none text-white">
+                    <button id="btn-update-states" class="bg-indigo-600 hover:bg-indigo-700 px-3 py-1 rounded font-bold transition text-xs">Aplicar</button>
+                </div>
+
+                <div class="flex items-center space-x-2 bg-gray-900 p-2 rounded border border-gray-600 shadow-sm">
+                    <label class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded font-bold transition text-xs cursor-pointer flex items-center gap-1">
+                        🖼️ Imagem de fundo
+                        <input type="file" id="bg-import" accept="image/*" class="hidden">
+                    </label>
+                    <div class="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded border border-gray-700 h-[30px]">
+                        <span class="text-[10px] uppercase font-bold text-gray-400">Zoom Semáforos</span>
+                        <input type="range" id="tl-size" min="0.5" max="2" step="0.1" value="1" class="w-20 h-1 bg-gray-600 rounded appearance-none cursor-pointer">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MAPA -->
+        <div class="w-full h-[550px] bg-gray-800 rounded-lg border-2 border-gray-600 shadow-2xl relative flex-shrink-0" id="canvas-container">
+            <div class="absolute top-4 right-4 z-50 flex flex-col items-end gap-2">
+                <button id="btn-lock-map" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded border border-gray-500 font-bold text-xs flex items-center justify-center shadow transition-colors mb-2" title="Bloquear Movimento do Fundo e Zoom">🔓 Travar</button>
+                <button id="btn-zoom-in" class="bg-gray-700 hover:bg-gray-600 text-white w-8 h-8 rounded border border-gray-500 font-bold text-lg flex items-center justify-center shadow transition-opacity">+</button>
+                <button id="btn-zoom-out" class="bg-gray-700 hover:bg-gray-600 text-white w-8 h-8 rounded border border-gray-500 font-bold text-lg flex items-center justify-center shadow transition-opacity">-</button>
+                <button id="btn-reset-view" class="bg-gray-700 hover:bg-gray-600 text-white w-8 h-8 rounded border border-gray-500 font-bold text-sm flex items-center justify-center shadow mt-2 transition-opacity" title="Centralizar Mapa">O</button>
+            </div>
+            
+            <div id="empty-map-msg" class="absolute inset-0 flex items-center justify-center text-gray-500 font-bold text-2xl pointer-events-none opacity-50">
+                Adicione um semáforo ou carregue o Fundo
+            </div>
+            
+            <div id="map-layer"></div>
+        </div>
+
+        <!-- TABELA -->
+        <div class="w-full bg-gray-800 rounded-lg border border-gray-700 overflow-x-auto shadow-xl flex-grow flex flex-col">
+            <div class="p-3 border-b border-gray-700 bg-gray-900 flex justify-between items-center">
+                <h2 class="text-base font-bold text-gray-200">Matriz de Configuração de Tráfego</h2>
+                <div class="flex gap-2">
+                    <button onclick="addTrafficLight(false)" class="bg-gray-700 hover:bg-gray-600 border border-gray-500 text-xs px-3 py-1 rounded font-bold transition">+ 🚗 Sinaleira p/ veículo</button>
+                    <button onclick="addTrafficLight(true)" class="bg-gray-700 hover:bg-gray-600 border border-gray-500 text-xs px-3 py-1 rounded font-bold transition">+ 🚶 Sinaleira p/ pedestre</button>
+                </div>
+            </div>
+            <div class="flex-grow overflow-auto relative min-h-[150px]">
+                <table class="w-full text-sm text-left">
+                    <thead id="config-head" class="text-xs uppercase bg-gray-700 text-gray-300"></thead>
+                    <tbody id="config-body" class="empty-state-hide"></tbody>
+                    <tfoot id="config-foot" class="empty-state-hide"></tfoot>
+                </table>
+                <div id="empty-table-msg" class="absolute inset-0 flex items-center justify-center text-gray-500 pointer-events-none">
+                    Nenhum semáforo configurado.
+                </div>
+            </div>
+        </div>
+
+        <!-- EXPORT/IMPORT BLOCKS -->
+        <div class="ml-auto flex items-center space-x-2 bg-gray-900 p-2 rounded border border-gray-600 shadow-sm h-[48px]">
+            <button id="btn-export" class="bg-green-600 hover:bg-green-700 px-3 py-1.5 rounded font-bold transition text-xs h-full">💾 Exportar CSV</button>
+            <label class="bg-purple-600 hover:bg-purple-700 px-3 py-1.5 rounded font-bold transition text-xs cursor-pointer h-full flex items-center">
+                📂 Importar CSV
+                <input type="file" id="file-import" accept=".csv" class="hidden">
+            </label>
+            <button onclick="clearAll()" class="bg-red-900 hover:bg-red-800 text-red-200 px-3 py-1.5 rounded font-bold transition text-xs h-full ml-4">🗑️ Limpar Tudo</button>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // ESTADO GLOBAL DINÂMICO (INICIA VAZIO)
+        // ==========================================
+        let numStates = 4;
+        let stateNames = ["E1", "E2", "E3", "E4"];
+        let stateTimes = [15, 15, 15, 15];
+        let nextStates = [1, 2, 3, 0]; 
+        let semaforos = [];
+        let stateMatrix = [];
+
+        let isRunning = false, currentState = 0, timeRemaining = 0, timerInterval = null;
+        let isMapLocked = false;
+        
+        const canvasContainer = document.getElementById('canvas-container');
+        const mapLayer = document.getElementById('map-layer');
+
+        // ==========================================
+        // PAN & ZOOM MAPA
+        // ==========================================
+        let mapScale = 1, mapTranslateX = 0, mapTranslateY = 0, isDraggingMap = false, startMapX = 0, startMapY = 0;
+
+        function applyMapTransform() { 
+            mapLayer.style.transform = `translate(${mapTranslateX}px, ${mapTranslateY}px) scale(${mapScale})`; 
+        }
+        
+        function zoom(amount, cX = canvasContainer.clientWidth/2, cY = canvasContainer.clientHeight/2) {
+            if (isMapLocked) return; 
+            const nS = Math.max(0.1, Math.min(mapScale + amount, 5)); if (nS === mapScale) return;
+            const r = nS / mapScale; mapTranslateX = cX - (cX - mapTranslateX) * r; mapTranslateY = cY - (cY - mapTranslateY) * r;
+            mapScale = nS; applyMapTransform();
+        }
+
+        canvasContainer.addEventListener('wheel', (e) => { 
+            e.preventDefault(); 
+            if (isMapLocked) return; 
+            const r = canvasContainer.getBoundingClientRect(); 
+            zoom(e.deltaY < 0 ? 0.1 : -0.1, e.clientX - r.left, e.clientY - r.top); 
+        });
+
+        canvasContainer.addEventListener('mousedown', (e) => {
+            if (isMapLocked) return; 
+            if (e.target === canvasContainer || e.target === mapLayer) { 
+                isDraggingMap = true; startMapX = e.clientX - mapTranslateX; startMapY = e.clientY - mapTranslateY; 
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => { 
+            if (isDraggingMap) { mapTranslateX = e.clientX - startMapX; mapTranslateY = e.clientY - startMapY; applyMapTransform(); } 
+        });
+        window.addEventListener('mouseup', () => { isDraggingMap = false; });
+
+        document.getElementById('btn-lock-map').addEventListener('click', (e) => {
+            isMapLocked = !isMapLocked; 
+            e.target.innerHTML = isMapLocked ? '🔒 Destravar' : '🔓 Travar';
+            e.target.classList.toggle('bg-red-700', isMapLocked); 
+            e.target.classList.toggle('bg-gray-700', !isMapLocked);
+            canvasContainer.classList.toggle('locked', isMapLocked);
+
+            const zoomControls = [document.getElementById('btn-zoom-in'), document.getElementById('btn-zoom-out'), document.getElementById('btn-reset-view')];
+            zoomControls.forEach(btn => {
+                btn.style.opacity = isMapLocked ? '0.3' : '1';
+                btn.style.pointerEvents = isMapLocked ? 'none' : 'auto';
+            });
+        });
+
+        document.getElementById('btn-zoom-in').addEventListener('click', () => zoom(0.2));
+        document.getElementById('btn-zoom-out').addEventListener('click', () => zoom(-0.2));
+        document.getElementById('btn-reset-view').addEventListener('click', () => { 
+            if (isMapLocked) return;
+            mapScale = 1; mapTranslateX = 0; mapTranslateY = 0; applyMapTransform(); 
+        });
+        document.getElementById('tl-size').addEventListener('input', (e) => document.documentElement.style.setProperty('--tl-global-scale', e.target.value));
+
+        // ==========================================
+        // DRAG & DROP SEMÁFOROS
+        // ==========================================
+        let draggedLed = null, dragStartX = 0, dragStartY = 0, initialLedX = 0, initialLedY = 0;
+
+        function startDragLed(e) {
+            if(e.target.tagName === 'BUTTON' || e.target.classList.contains('led-label') || e.target.classList.contains('tl-controls')) return;
+            draggedLed = e.currentTarget; dragStartX = e.clientX; dragStartY = e.clientY;
+            initialLedX = parseFloat(draggedLed.style.left) || 0; initialLedY = parseFloat(draggedLed.style.top) || 0;
+            e.stopPropagation(); 
+        }
+
+        window.addEventListener('mousemove', (e) => {
+            if (draggedLed) {
+                draggedLed.style.left = `${initialLedX + (e.clientX - dragStartX) / mapScale}px`;
+                draggedLed.style.top = `${initialLedY + (e.clientY - dragStartY) / mapScale}px`;
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (draggedLed) {
+                const idx = parseInt(draggedLed.dataset.idx);
+                semaforos[idx].x = parseFloat(draggedLed.style.left); semaforos[idx].y = parseFloat(draggedLed.style.top);
+                draggedLed = null;
+            }
+        });
+
+        // ==========================================
+        // FUNÇÕES DINÂMICAS: ENCADEAMENTO LÓGICO
+        // ==========================================
+        function addTrafficLight(isPedestrian) {
+            const id = 'sem_' + Date.now();
+            const newX = (canvasContainer.clientWidth/2 - mapTranslateX)/mapScale;
+            const newY = (canvasContainer.clientHeight/2 - mapTranslateY)/mapScale;
+            
+            semaforos.push({ id, nome: isPedestrian ? `Pedestre ${semaforos.length + 1}` : `Veículo ${semaforos.length + 1}`, x: newX, y: newY, rot: 0, isPedestrian });
+            
+            let newRow = [];
+            const len = stateMatrix.length;
+
+            if (len >= 2) {
+                // Herda do "anterior do anterior" (n-2) para alternar cruzamentos
+                newRow = stateMatrix[len - 2].map(cell => ({ ...cell }));
+            } else if (len === 1) {
+                // O segundo semáforo desliza o ciclo 1 passo pra direita
+                newRow = stateMatrix[0].map((cell, i) => {
+                    let prevIdx = (i - 1 + numStates) % numStates;
+                    return { ...stateMatrix[0][prevIdx] };
+                });
+            } else {
+                // O 1º semáforo começa Verde no Estado 0 e Vermelho nos outros
+                for(let i=0; i<numStates; i++) newRow.push({ val: i === 0 ? 1 : 0, blink: false });
+            }
+            
+            stateMatrix.push(newRow);
+            renderUI();
+        }
+
+        function removeTrafficLight(idx) {
+            semaforos.splice(idx, 1);
+            stateMatrix.splice(idx, 1);
+            renderUI();
+        }
+
+        function clearAll() {
+            if(confirm("Apagar todos os semáforos e a configuração atual?")) {
+                resetSimulation();
+                semaforos = [];
+                stateMatrix = [];
+                mapLayer.style.backgroundImage = '';
+                mapScale = 1; mapTranslateX = 0; mapTranslateY = 0; applyMapTransform();
+                renderUI();
+            }
+        }
+
+        function handleStateNameChange(idx, newVal) {
+            stateNames[idx] = newVal || `E${idx+1}`;
+            document.querySelectorAll('.next-state-select').forEach(sel => sel.options[idx].text = stateNames[idx]);
+            if (isRunning && currentState === idx) document.getElementById('status-text').innerText = stateNames[idx];
+        }
+
+        function handleSemaforoNameChange(idx, newVal) {
+            semaforos[idx].nome = newVal || `Semáforo ${idx+1}`;
+            const label = document.getElementById(`label-${idx}`);
+            if(label) label.innerText = semaforos[idx].nome;
+        }
+
+        // ==========================================
+        // RENDERIZAÇÃO
+        // ==========================================
+        function renderUI() {
+            document.getElementById('empty-map-msg').style.display = (semaforos.length === 0 && !mapLayer.style.backgroundImage) ? 'flex' : 'none';
+            document.getElementById('empty-table-msg').style.display = semaforos.length === 0 ? 'flex' : 'none';
+            
+            renderTable(); renderCanvas(); updateVisuals(); applyMapTransform();
+            document.getElementById('num-states-input').value = numStates;
+        }
+
+        function renderCanvas() {
+            Array.from(mapLayer.children).forEach(c => { if(c.classList.contains('draggable-led')) c.remove() });
+
+            semaforos.forEach((s, sIdx) => {
+                const container = document.createElement('div');
+                container.className = 'draggable-led'; container.dataset.idx = sIdx;
+                container.style.left = `${s.x}px`; container.style.top = `${s.y}px`;
+
+                let tlHTML = `<div id="tl-${sIdx}" class="traffic-light" style="--tl-rot: ${s.rot}deg">
+                    <div class="tl-led tl-red"></div>
+                    ${!s.isPedestrian ? `<div class="tl-led tl-yellow"></div>` : ''}
+                    <div class="tl-led tl-green"></div></div>
+                    <div class="tl-controls">
+                        <div class="led-label" id="label-${sIdx}">${s.nome}</div>
+                        <button class="btn-rotate" data-idx="${sIdx}" title="Girar 90 graus">↻</button>
+                    </div>`;
+
+                container.innerHTML = tlHTML;
+                container.addEventListener('mousedown', startDragLed);
+                mapLayer.appendChild(container);
+            });
+
+            document.querySelectorAll('.btn-rotate').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const idx = e.target.dataset.idx;
+                    semaforos[idx].rot = (semaforos[idx].rot + 90) % 360;
+                    document.getElementById(`tl-${idx}`).style.setProperty('--tl-rot', `${semaforos[idx].rot}deg`);
+                });
+                btn.addEventListener('mousedown', (e) => e.stopPropagation());
+            });
+        }
+
+        function renderTable() {
+            const thead = document.getElementById('config-head'), tbody = document.getElementById('config-body'), tfoot = document.getElementById('config-foot');
+            if (semaforos.length === 0) {
+                thead.innerHTML = ''; tbody.innerHTML = ''; tfoot.innerHTML = ''; return;
+            }
+
+            let theadHTML = `<tr><th class="px-4 py-3 sticky left-0 bg-gray-700 z-20 min-w-[200px] border-b border-gray-600 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)]">Semáforo</th>`;
+            for (let i = 0; i < numStates; i++) {
+                theadHTML += `<th class="px-2 py-3 text-center min-w-[110px] border-b border-gray-600" id="th-${i}">
+                    <input type="text" class="editable-input font-bold" data-idx="${i}" value="${stateNames[i]}">
+                </th>`;
+            }
+            thead.innerHTML = theadHTML + `</tr>`;
+
+            tbody.innerHTML = '';
+            semaforos.forEach((s, sIdx) => {
+                let tr = document.createElement('tr'); tr.className = 'border-b border-gray-700 bg-gray-800 hover:bg-gray-750';
+                
+                let tdName = `<td class="px-4 py-2 font-medium sticky left-0 bg-gray-800 z-10 border-r border-gray-700 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] flex items-center justify-between gap-2 group">
+                    <span class="text-lg">${s.isPedestrian ? '🚶' : '🚗'}</span>
+                    <input type="text" class="editable-input semaforo-name-input flex-grow" data-idx="${sIdx}" value="${s.nome}">
+                    <button onclick="removeTrafficLight(${sIdx})" class="text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition" title="Excluir">🗑️</button>
+                </td>`;
+                
+                let tdStates = '';
+                for (let i = 0; i < numStates; i++) {
+                    let cellData = stateMatrix[sIdx][i];
+                    tdStates += `<td class="px-2 py-2 text-center col-state-${i}">
+                        <div class="flex flex-row items-center gap-1.5 w-full">
+                            <div class="w-[70%]">
+                                <select class="state-select bg-gray-900 border border-gray-600 rounded px-1 py-1 text-xs w-full outline-none focus:border-indigo-500" data-semaforo="${sIdx}" data-state="${i}">
+                                    <option value="0" ${cellData.val == 0 ? 'selected' : ''}>🔴 Vermelho</option>
+                                    <option value="1" ${cellData.val == 1 ? 'selected' : ''}>🟢 Verde</option>
+                                    ${!s.isPedestrian ? `<option value="2" ${cellData.val == 2 ? 'selected' : ''}>🟡 Amarelo</option>` : ''}
+                                </select>
+                            </div>
+                            <div class="w-[30%]">
+                                <label class="text-[9px] font-bold flex flex-col items-center justify-center w-full p-1 rounded bg-gray-900 border border-gray-700 cursor-pointer hover:border-gray-500 text-center leading-none" title="Intermitente">
+                                    <input type="checkbox" class="blink-check mb-0.5" data-semaforo="${sIdx}" data-state="${i}" ${cellData.blink ? 'checked' : ''}>
+                                    Piscar
+                                </label>
+                            </div>
+                        </div>
+                    </td>`;
+                }
+                tr.innerHTML = tdName + tdStates; tbody.appendChild(tr);
+            });
+
+            let tfootTimeHTML = `<tr class="bg-gray-700 font-bold"><td class="px-4 py-3 sticky left-0 bg-gray-700 z-20 border-r border-t border-gray-600 text-yellow-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)]">Tempo (seg)</td>`;
+            for (let i = 0; i < numStates; i++) {
+                tfootTimeHTML += `<td class="px-2 py-3 text-center col-state-${i} border-t border-gray-600"><input type="number" min="1" class="time-input w-full bg-gray-900 border border-gray-500 rounded px-1 py-1 text-center outline-none text-yellow-400 font-bold text-sm" data-state="${i}" value="${stateTimes[i]}"></td>`;
+            }
+            
+            let tfootNextHTML = `<tr class="bg-gray-700 font-bold"><td class="px-4 py-2 sticky left-0 bg-gray-700 z-20 border-r border-t border-gray-600 text-purple-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)]">Próximo (Loop)</td>`;
+            for (let i = 0; i < numStates; i++) {
+                let options = '';
+                for(let j = 0; j < numStates; j++) options += `<option value="${j}" ${nextStates[i] === j ? 'selected' : ''}>${stateNames[j]}</option>`;
+                tfootNextHTML += `<td class="px-2 py-2 text-center col-state-${i} border-t border-gray-600"><select class="next-state-select w-full bg-gray-900 border border-gray-500 rounded px-1 py-1 text-center text-purple-300 outline-none text-xs" data-state="${i}">${options}</select></td>`;
+            }
+            tfoot.innerHTML = tfootTimeHTML + `</tr>` + tfootNextHTML + `</tr>`;
+            
+            attachEventListenersToTable();
+        }
+
+        function updateVisuals() {
+            if (semaforos.length === 0) return;
+            for (let i = 0; i < numStates; i++) {
+                const th = document.getElementById(`th-${i}`); const cells = document.querySelectorAll(`.col-state-${i}`);
+                if (i === currentState && isRunning) { if(th) th.classList.add('text-green-400'); cells.forEach(c => c.classList.add('active-col')); } 
+                else { if(th) th.classList.remove('text-green-400'); cells.forEach(c => c.classList.remove('active-col')); }
+            }
+
+            semaforos.forEach((s, sIdx) => {
+                const tlContainer = document.getElementById(`tl-${sIdx}`); if(!tlContainer) return;
+                tlContainer.querySelectorAll('.tl-led').forEach(led => led.classList.remove('active', 'is-blinking'));
+
+                if (isRunning) {
+                    const conf = stateMatrix[sIdx][currentState]; let targetClass = '';
+                    if (conf.val == 0) targetClass = 'tl-red';
+                    else if (conf.val == 1) targetClass = 'tl-green';
+                    else if (conf.val == 2 && !s.isPedestrian) targetClass = 'tl-yellow';
+                    else if (conf.val == 2 && s.isPedestrian) targetClass = 'tl-red'; 
+
+                    const activeLed = tlContainer.querySelector(`.${targetClass}`);
+                    if (activeLed) { activeLed.classList.add('active'); if (conf.blink) activeLed.classList.add('is-blinking'); }
+                }
+            });
+        }
+
+        // ==========================================
+        // LÓGICA DE CLONAGEM DE ESTADOS OTIMIZADA
+        // ==========================================
+        function resizeStates(newNum) {
+            if (newNum < 1) newNum = 1;
+            let oldNum = numStates;
+
+            if (newNum > oldNum) {
+                for (let i = oldNum; i < newNum; i++) {
+                    let baseIndex = i - 1; 
+                    
+                    stateNames.push(`E${i + 1}`);
+                    stateTimes.push(stateTimes[baseIndex]);
+
+                    let oldNext = nextStates[baseIndex]; 
+                    nextStates[baseIndex] = i; 
+                    nextStates.push(oldNext);  
+
+                    for (let sIdx = 0; sIdx < semaforos.length; sIdx++) {
+                        let lastCell = stateMatrix[sIdx][baseIndex] || { val: 0, blink: false };
+                        stateMatrix[sIdx].push({ val: lastCell.val, blink: lastCell.blink });
+                    }
+                }
+            } else if (newNum < oldNum) {
+                stateNames.length = newNum;
+                stateTimes.length = newNum;
+                nextStates.length = newNum;
+                for (let i = 0; i < newNum; i++) {
+                    if (nextStates[i] >= newNum) nextStates[i] = 0; 
+                }
+                for (let i = 0; i < semaforos.length; i++) stateMatrix[i].length = newNum;
+            }
+
+            numStates = newNum; resetSimulation(); renderUI();
+        }
+
+        function tick() {
+            timeRemaining--;
+            if (timeRemaining <= 0) { 
+                let prox = nextStates[currentState];
+                if (prox === undefined || prox >= numStates) prox = 0; 
+                currentState = prox; 
+                timeRemaining = stateTimes[currentState] || 1; 
+                
+                // CORREÇÃO: Atualiza o texto na barra superior com o nome do novo estado
+                document.getElementById('status-text').innerText = stateNames[currentState];
+                
+                updateVisuals(); 
+            }
+            document.getElementById('timer-text').innerText = timeRemaining;
+        }
+
+        function toggleSimulation() {
+            if (semaforos.length === 0) return alert("Adicione pelo menos um semáforo antes de iniciar.");
+            const btn = document.getElementById('btn-toggle'), status = document.getElementById('status-text');
+            if (isRunning) {
+                clearInterval(timerInterval); isRunning = false;
+                btn.innerHTML = "▶ Retomar"; btn.classList.replace('bg-yellow-600', 'bg-blue-600');
+                status.innerText = "PAUSADO"; status.classList.replace('text-green-400', 'text-yellow-400');
+            } else {
+                if (timeRemaining <= 0) timeRemaining = stateTimes[currentState] || 1;
+                timerInterval = setInterval(tick, 1000); isRunning = true;
+                btn.innerHTML = "⏸ Pausar"; btn.classList.replace('bg-blue-600', 'bg-yellow-600');
+                status.innerText = stateNames[currentState]; status.classList.replace('text-yellow-400', 'text-green-400');
+                document.getElementById('timer-text').innerText = timeRemaining; updateVisuals();
+            }
+        }
+
+        function resetSimulation() {
+            clearInterval(timerInterval); isRunning = false; currentState = 0; timeRemaining = 0;
+            document.getElementById('btn-toggle').innerHTML = "▶ Iniciar"; document.getElementById('btn-toggle').classList.replace('bg-yellow-600', 'bg-blue-600');
+            document.getElementById('status-text').innerText = "PARADO"; document.getElementById('status-text').classList.replace('text-green-400', 'text-yellow-400');
+            document.getElementById('timer-text').innerText = '0'; updateVisuals();
+        }
+
+        function attachEventListenersToTable() {
+            document.querySelectorAll('#config-head .editable-input').forEach(input => {
+                input.addEventListener('input', (e) => handleStateNameChange(parseInt(e.target.dataset.idx), e.target.value));
+            });
+            document.querySelectorAll('.semaforo-name-input').forEach(input => {
+                input.addEventListener('input', (e) => handleSemaforoNameChange(parseInt(e.target.dataset.idx), e.target.value));
+            });
+            document.querySelectorAll('.state-select').forEach(select => {
+                select.addEventListener('change', (e) => { stateMatrix[e.target.dataset.semaforo][e.target.dataset.state].val = parseInt(e.target.value); if (isRunning && parseInt(e.target.dataset.state) === currentState) updateVisuals(); });
+            });
+            document.querySelectorAll('.blink-check').forEach(checkbox => {
+                checkbox.addEventListener('change', (e) => { stateMatrix[e.target.dataset.semaforo][e.target.dataset.state].blink = e.target.checked; if (isRunning && parseInt(e.target.dataset.state) === currentState) updateVisuals(); });
+            });
+            document.querySelectorAll('.time-input').forEach(input => {
+                input.addEventListener('change', (e) => stateTimes[parseInt(e.target.dataset.state)] = parseInt(e.target.value) || 1);
+            });
+            document.querySelectorAll('.next-state-select').forEach(select => {
+                select.addEventListener('change', (e) => nextStates[parseInt(e.target.dataset.state)] = parseInt(e.target.value));
+            });
+        }
+
+        // ==========================================
+        // EXPORT/IMPORT CSV (V3)
+        // ==========================================
+        document.getElementById('bg-import').addEventListener('change', (e) => {
+            if (!e.target.files[0]) return;
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                const img = new Image();
+                img.onload = function() {
+                    mapLayer.style.width = this.width + 'px'; mapLayer.style.height = this.height + 'px';
+                    mapLayer.style.backgroundImage = `url('${evt.target.result}')`;
+                    mapScale = Math.min(canvasContainer.clientWidth / this.width, canvasContainer.clientHeight / this.height);
+                    mapTranslateX = (canvasContainer.clientWidth - (this.width * mapScale)) / 2; mapTranslateY = (canvasContainer.clientHeight - (this.height * mapScale)) / 2;
+                    applyMapTransform(); renderUI();
+                }
+                img.src = evt.target.result;
+            }; reader.readAsDataURL(e.target.files[0]); e.target.value = ''; 
+        });
+
+        document.getElementById('btn-export').addEventListener('click', () => {
+            let csv = "SIMULATOR_V3\n";
+            csv += `ESTADOS,${stateNames.join(',')}\n`;
+            csv += `TEMPOS,${stateTimes.join(',')}\n`;
+            csv += `PROX,${nextStates.join(',')}\n`;
+            
+            csv += `---SEMAFOROS---\nID,NOME,PEDESTRE,X,Y,ROT`;
+            for(let i=0; i<numStates; i++) csv += `,S${i}`;
+            csv += "\n";
+            semaforos.forEach((s, idx) => {
+                csv += `${s.id},${s.nome},${s.isPedestrian?1:0},${Math.round(s.x)},${Math.round(s.y)},${s.rot}`;
+                for(let i=0; i<numStates; i++) csv += `,${stateMatrix[idx][i].val}|${stateMatrix[idx][i].blink ? 1 : 0}`;
+                csv += "\n";
+            });
+            
+            csv += `---MAPA---\nScale,TransX,TransY,Locked\n`;
+            csv += `${mapScale},${mapTranslateX},${mapTranslateY},${isMapLocked?1:0}\n`;
+
+            const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+            a.download = 'cenario_semaforos.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        });
+
+        document.getElementById('file-import').addEventListener('change', (e) => {
+            if (!e.target.files[0]) return;
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                try {
+                    const mainChunks = evt.target.result.split('---SEMAFOROS---');
+                    if (mainChunks.length < 2 || !mainChunks[0].startsWith('SIMULATOR_V')) throw new Error("Formato de arquivo inválido.");
+                    
+                    const headerLines = mainChunks[0].split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('SIMULATOR_V'));
+                    let newNames = headerLines[0].split(','); newNames.shift(); let newNum = newNames.length;
+                    let newTimes = headerLines[1].split(','); newTimes.shift(); newTimes = newTimes.map(Number);
+                    let newProx = headerLines[2].split(','); newProx.shift(); newProx = newProx.map(val => { let v = parseInt(val); return (isNaN(v) || v >= newNum) ? 0 : v; });
+                    
+                    const restChunks = mainChunks[1].split('---MAPA---');
+                    const semLines = restChunks[0].split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('ID,'));
+                    
+                    let newSemaforos = [], newMatrix = [];
+                    
+                    semLines.forEach(line => {
+                        let cols = line.split(',');
+                        let isPed = cols[2] === '1';
+                        newSemaforos.push({ id: cols[0], nome: cols[1], isPedestrian: isPed, x: parseFloat(cols[3]), y: parseFloat(cols[4]), rot: parseInt(cols[5]) });
+                        
+                        let row = [];
+                        for(let j=0; j<newNum; j++) {
+                            let parts = cols[6+j].split('|');
+                            let val = parseInt(parts[0]);
+                            if (isPed && val === 2) val = 0; 
+                            row.push({ val: val, blink: parts[1] === '1' });
+                        }
+                        newMatrix.push(row);
+                    });
+
+                    if (restChunks.length > 1) {
+                        const mapLines = restChunks[1].split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('Scale,'));
+                        if (mapLines.length > 0) {
+                            const [sc, tx, ty, lk] = mapLines[0].split(',');
+                            mapScale = parseFloat(sc) || 1; mapTranslateX = parseFloat(tx) || 0; mapTranslateY = parseFloat(ty) || 0;
+                            if ((lk === '1') !== isMapLocked) document.getElementById('btn-lock-map').click(); 
+                        }
+                    }
+
+                    numStates = newNum; stateNames = newNames; stateTimes = newTimes; nextStates = newProx;
+                    semaforos = newSemaforos; stateMatrix = newMatrix;
+                    
+                    resetSimulation(); renderUI();
+                } catch (err) { alert(err.message); console.error(err); }
+                e.target.value = '';
+            }; reader.readAsText(e.target.files[0]);
+        });
+
+        // INIT
+        document.getElementById('btn-update-states').addEventListener('click', () => resizeStates(parseInt(document.getElementById('num-states-input').value) || 4));
+        document.getElementById('btn-toggle').addEventListener('click', toggleSimulation);
+        document.getElementById('btn-reset').addEventListener('click', resetSimulation);
+        window.addEventListener('load', renderUI);
+    </script>
+</body>
+</html>
