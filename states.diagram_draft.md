@@ -1,3 +1,4 @@
+```mermaid
 stateDiagram-v2
     direction TB
     
@@ -37,3 +38,4 @@ stateDiagram-v2
     note left of NWReopenned
         northbound and westbound lanes reopened
     end note
+```
